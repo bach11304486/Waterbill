@@ -1,0 +1,968 @@
+#define DEBUG_MODE  // Preprocessor: Defines debug mode
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using static System.Net.Mime.MediaTypeNames;
+
+namespace WaterBillSystem
+{
+    public enum CustomerType
+    {
+        Household = 1,
+        Business = 2,
+        Administrative = 3,
+        Industrial = 4
+    }
+
+    public class Customer
+    {
+        public string Id { get; set; }
+        public string Name { get; set; }
+        public CustomerType Type { get; set; }
+        public int NumberOfPeople { get; set; }
+        public double PreviousReading { get; set; }
+        public double CurrentReading { get; set; }
+        public Dictionary<string, double> CustomFees { get; set; } = new Dictionary<string, double>();
+
+        public double Usage => Math.Max(0, CurrentReading - PreviousReading);
+        public double WaterCost => WaterBillCalculator.CalculateWaterCost(this);
+        public double EnvironmentFee => WaterCost * 0.10;
+        public double VAT => WaterCost * 0.10;
+        public double CustomFeesTotal => CustomFees.Sum(f => f.Value);
+        public double TotalBill => WaterCost + EnvironmentFee + VAT + CustomFeesTotal;
+    }
+
+    public static class WaterBillCalculator
+    {
+        public static double HouseholdPriceTier1 { get; set; } = 6000;
+        public static double HouseholdPriceTier2 { get; set; } = 12000;
+        public static double HouseholdPriceTier3 { get; set; } = 20000;
+        public static double BusinessPrice { get; set; } = 22000;
+        public static double AdministrativePrice { get; set; } = 10000;
+        public static double IndustrialPrice { get; set; } = 18000;
+
+        public static double CalculateWaterCost(Customer customer)
+        {
+            if (customer.Usage <= 0 || (customer.Type == CustomerType.Household && customer.NumberOfPeople <= 0))
+                return 0;
+
+            switch (customer.Type)
+            {
+                case CustomerType.Household:
+                    return CalculateHouseholdCost(customer);
+                case CustomerType.Business:
+                    return customer.Usage * BusinessPrice;
+                case CustomerType.Administrative:
+                    return customer.Usage * AdministrativePrice;
+                case CustomerType.Industrial:
+                    return customer.Usage * IndustrialPrice;
+                default:
+                    return 0;
+            }
+        }
+
+        private static double CalculateHouseholdCost(Customer customer)
+        {
+            double usagePerPerson = customer.Usage / customer.NumberOfPeople; // Lỗi nếu NumberOfPeople là 0
+            double totalCost = 0;
+
+            if (usagePerPerson <= 10)
+                totalCost = customer.Usage * HouseholdPriceTier2;
+            else if (usagePerPerson <= 20)
+                totalCost = (customer.NumberOfPeople * 10 * HouseholdPriceTier1) +
+                            ((customer.Usage - customer.NumberOfPeople * 10) * HouseholdPriceTier2);
+            else
+                totalCost = (customer.NumberOfPeople * 10 * HouseholdPriceTier1) +
+                            (customer.NumberOfPeople * 10 * HouseholdPriceTier2) +
+                            ((customer.Usage - customer.NumberOfPeople * 20) * HouseholdPriceTier3);
+
+            return totalCost;
+        }
+
+        public static double CalculateVAT(double cost, CustomerType type)
+        {
+            switch (type)
+            {
+                case CustomerType.Household: return cost * 0.05;
+                case CustomerType.Administrative: return cost * 0.10;
+                case CustomerType.Business: return cost * 0.08;
+                case CustomerType.Industrial: return cost * 0.12;
+                default: return 0;
+            }
+        }
+    }
+
+    public class WaterBillManager
+    {
+        private readonly List<Customer> _customers = new List<Customer>();
+
+        public void Run()
+        {
+            while (true)
+            {
+                DisplayMenu();
+                string choice = Console.ReadLine()?.Trim();
+                if (!ProcessMenuChoice(choice)) break;
+            }
+        }
+
+        private void DisplayMenu()
+        {
+            Console.WriteLine("\n=== Water Bill Menu ===");
+            Console.WriteLine("[1] Add Customer");
+            Console.WriteLine("[2] View All Customers");
+            Console.WriteLine("[3] Update Customer");
+            Console.WriteLine("[4] Remove Customer");
+            Console.WriteLine("[5] Search Customers");
+            Console.WriteLine("[6] Sort Customers");
+            Console.WriteLine("[7] Issue Invoices and Notify Payments");
+            Console.WriteLine("[0] Exit");
+            Console.Write("Select an option: ");
+        }
+
+        private bool ProcessMenuChoice(string choice)
+        {
+            switch (choice)
+            {
+                case "1": AddCustomer(); break;
+                case "2": ViewCustomers(); break;
+                case "3": UpdateCustomer(); break;
+                case "4": RemoveCustomer(); break;
+                case "5": SearchCustomers(); break;
+                case "6": SortCustomers(); break;
+                case "7": IssueInvoices(); break;
+                case "0": return false;
+                default: Console.WriteLine("Invalid option. Please try again."); break;
+            }
+            return true;
+        }
+
+        private void AddCustomer()
+        {
+            while (true)
+            {
+                var customer = new Customer();
+                customer.Id = InputString("Enter Customer ID: ", id => !_customers.Any(c => c.Id == id), "ID already exists.");
+                customer.Name = InputString("Enter Customer Name: ", s => !string.IsNullOrWhiteSpace(s), "Name cannot be empty.");
+                customer.Type = InputCustomerType();
+                customer.NumberOfPeople = InputInt("Number of people: ", 1);
+                customer.PreviousReading = InputDouble("Previous reading (m³): ", 0);
+                customer.CurrentReading = InputDouble("Current reading (m³): ", customer.PreviousReading);
+
+                while (Confirm("Add a custom fee?"))
+                {
+                    string feeName = InputString("Enter fee name: ", s => !string.IsNullOrWhiteSpace(s) && !customer.CustomFees.ContainsKey(s), "Fee name cannot be empty or already exists.");
+                    double feeAmount = InputDouble("Enter fee amount (VND): ", 0);
+                    customer.CustomFees[feeName] = feeAmount;
+                }
+
+                _customers.Add(customer);
+                if (!Confirm("Add another customer?")) break;
+            }  
+        }
+
+        private void ViewCustomers()
+        {
+            if (!_customers.Any())
+            {
+                Console.WriteLine("No customers found.");
+                return;
+            }
+
+            foreach (var (customer, index) in _customers.Select((c, i) => (c, i)))
+            {
+                Console.WriteLine($"\n--- Customer {index + 1} ---");
+                DisplayCustomer(customer);
+            }
+        }
+
+        private void UpdateCustomer()
+        {
+            if (!_customers.Any()) { Console.WriteLine("No customers found."); return; }
+
+            string id = InputString("Enter Customer ID to update: ");
+            var customer = _customers.FirstOrDefault(c => c.Id == id);
+            if (customer == null) { Console.WriteLine("Customer not found."); return; }
+
+            string name = InputString("New Name (Enter to skip): ", allowEmpty: true);
+            if (!string.IsNullOrEmpty(name)) customer.Name = name;
+
+            Console.Write("New Type (1=Household, 2=Business, 3=Administrative, 4=Industrial, Enter to skip): ");
+            if (Enum.TryParse(Console.ReadLine(), out CustomerType newType) && Enum.IsDefined(typeof(CustomerType), newType))
+            {
+                customer.Type = newType;
+                customer.NumberOfPeople = (newType == CustomerType.Household) ? InputInt("Number of people: ", 1) : 0;
+            }
+
+            string prevReading = InputString("New Previous Reading (Enter to skip): ", allowEmpty: true);
+            if (double.TryParse(prevReading, out double prev)) customer.PreviousReading = prev;
+
+            string currReading = InputString("New Current Reading (Enter to skip): ", allowEmpty: true);
+            if (double.TryParse(currReading, out double curr) && curr >= customer.PreviousReading)
+                customer.CurrentReading = curr;
+            else if (!string.IsNullOrEmpty(currReading))
+                Console.WriteLine("Current reading must be >= previous reading.");
+
+            while (Confirm("Modify custom fees?"))
+            {
+                Console.WriteLine("1. Add new fee");
+                Console.WriteLine("2. Update existing fee");
+                Console.WriteLine("3. Remove fee");
+                Console.Write("Choose an action (1-3, Enter to skip): ");
+                string feeAction = Console.ReadLine()?.Trim();
+                if (string.IsNullOrEmpty(feeAction)) break;
+
+                switch (feeAction)
+                {
+                    case "1":
+                        string newFeeName = InputString("Enter new fee name: ", s => !string.IsNullOrWhiteSpace(s) && !customer.CustomFees.ContainsKey(s), "Fee name cannot be empty or already exists.");
+                        double newFeeAmount = InputDouble("Enter fee amount (VND): ", 0);
+                        customer.CustomFees[newFeeName] = newFeeAmount;
+                        Console.WriteLine($"Added fee '{newFeeName}' with amount {newFeeAmount:F2} VND.");
+                        break;
+                    case "2":
+                        if (!customer.CustomFees.Any()) { Console.WriteLine("No fees to update."); break; }
+                        string updateFeeName = InputString("Enter fee name to update: ", s => customer.CustomFees.ContainsKey(s), "Fee not found.");
+                        double updateFeeAmount = InputDouble("Enter new fee amount (VND): ", 0);
+                        customer.CustomFees[updateFeeName] = updateFeeAmount;
+                        Console.WriteLine($"Fee '{updateFeeName}' updated to {updateFeeAmount:F2} VND.");
+                        break;
+                    case "3":
+                        if (!customer.CustomFees.Any()) { Console.WriteLine("No fees to remove."); break; }
+                        string removeFeeName = InputString("Enter fee name to remove: ", s => customer.CustomFees.ContainsKey(s), "Fee not found.");
+                        customer.CustomFees.Remove(removeFeeName);
+                        Console.WriteLine($"Fee '{removeFeeName}' removed.");
+                        break;
+                    default:
+                        Console.WriteLine("Invalid action.");
+                        break;
+                }
+            }
+
+            Console.WriteLine("Customer updated successfully.");
+#if DEBUG_MODE
+            Console.WriteLine($"[DEBUG] Updated Customer: ID={customer.Id}, TotalBill={customer.TotalBill:F2} VND");
+#endif
+        }
+
+        private void RemoveCustomer()
+        {
+            string id = InputString("Enter Customer ID to remove: ");
+            var customer = _customers.FirstOrDefault(c => c.Id == id);
+            if (customer != null)
+            {
+                _customers.Remove(customer);
+                Console.WriteLine("Customer removed successfully.");
+#if DEBUG_MODE
+                Console.WriteLine($"[DEBUG] Removed Customer: ID={id}");
+#endif
+            }
+            else
+            {
+                Console.WriteLine("Customer not found.");
+            }
+        }
+
+        private void SearchCustomers()
+        {
+            if (!_customers.Any()) { Console.WriteLine("No customers found."); return; }
+
+            Console.WriteLine("\n=== Search Customers ===");
+            Console.WriteLine("1. Search by ID");
+            Console.WriteLine("2. Search by Name (partial match)");
+            Console.WriteLine("3. Search by Type");
+            Console.WriteLine("4. Search by Bill Range");
+            Console.WriteLine("5. Search by Usage Range");
+            Console.WriteLine("6. Search by VAT Range");
+            Console.WriteLine("0. Back to main menu");
+            Console.Write("Choose an action (0-6): ");
+            string choice = Console.ReadLine()?.Trim();
+
+            List<Customer> results = new List<Customer>();
+            switch (choice)
+            {
+                case "1":
+                    string id = InputString("Enter Customer ID: ");
+                    var customer = _customers.FirstOrDefault(c => c.Id == id);
+                    if (customer != null) results.Add(customer);
+                    break;
+                case "2":
+                    string name = InputString("Enter Customer Name (partial match): ", s => !string.IsNullOrWhiteSpace(s), "Name cannot be empty.");
+                    results = _customers.Where(c => c.Name.ToLower().Contains(name.ToLower())).ToList();
+                    break;
+                case "3":
+                    Console.Write("Enter customer type (1=Household, 2=Business, 3=Administrative, 4=Industrial): ");
+                    if (Enum.TryParse(Console.ReadLine(), out CustomerType type) && Enum.IsDefined(typeof(CustomerType), type))
+                        results = _customers.Where(c => c.Type == type).ToList();
+                    else
+                        Console.WriteLine("Invalid customer type.");
+                    break;
+                case "4":
+                    double minBill = InputDouble("Enter minimum bill amount: ", 0);
+                    double maxBill = InputDouble("Enter maximum bill amount: ", minBill);
+                    results = _customers.Where(c => c.TotalBill >= minBill && c.TotalBill <= maxBill).ToList();
+                    break;
+                case "5":
+                    double minUsage = InputDouble("Enter minimum usage (m³): ", 0);
+                    double maxUsage = InputDouble("Enter maximum usage (m³): ", minUsage);
+                    results = _customers.Where(c => c.Usage >= minUsage && c.Usage <= maxUsage).ToList();
+                    break;
+                case "6":
+                    double minVAT = InputDouble("Enter minimum VAT amount: ", 0);
+                    double maxVAT = InputDouble("Enter maximum VAT amount: ", minVAT);
+                    results = _customers.Where(c => c.VAT >= minVAT && c.VAT <= maxVAT).ToList();
+                    break;
+                case "0": return;
+                default: Console.WriteLine("Invalid action."); return;
+            }
+
+            if (!results.Any())
+            {
+                Console.WriteLine("No customers found matching the criteria.");
+            }
+            else
+            {
+                foreach (var customer in results)
+                {
+                    Console.WriteLine("\n--- Matching Customer ---");
+                    DisplayCustomer(customer);
+                }
+#if DEBUG_MODE
+                Console.WriteLine($"[DEBUG] Search returned {results.Count} results.");
+#endif
+            }
+        }
+
+        private void SortCustomers()
+        {
+            if (!_customers.Any()) { Console.WriteLine("No customers found."); return; }
+
+            Console.WriteLine("\n=== Sort Customers ===");
+            Console.WriteLine("1. Sort by ID");
+            Console.WriteLine("2. Sort by Name");
+            Console.WriteLine("3. Sort by Total Bill");
+            Console.WriteLine("4. Sort by Usage");
+            Console.Write("Choose sort criteria (1-4): ");
+            string criteria = Console.ReadLine()?.Trim();
+
+            Console.Write("Sort order (1=Ascending, 2=Descending): ");
+            string order = Console.ReadLine()?.Trim();
+            bool ascending = order == "1";
+
+            List<Customer> sortedCustomers = _customers.ToList();
+            switch (criteria)
+            {
+                case "1":
+                    sortedCustomers = ascending
+                        ? sortedCustomers.OrderBy(c => c.Id).ToList()
+                        : sortedCustomers.OrderByDescending(c => c.Id).ToList();
+                    break;
+                case "2":
+                    sortedCustomers = ascending
+                        ? sortedCustomers.OrderBy(c => c.Name).ToList()
+                        : sortedCustomers.OrderByDescending(c => c.Name).ToList();
+                    break;
+                case "3":
+                    sortedCustomers = ascending
+                        ? sortedCustomers.OrderBy(c => c.TotalBill).ToList()
+                        : sortedCustomers.OrderByDescending(c => c.TotalBill).ToList();
+                    break;
+                case "4":
+                    sortedCustomers = ascending
+                        ? sortedCustomers.OrderBy(c => c.Usage).ToList()
+                        : sortedCustomers.OrderByDescending(c => c.Usage).ToList();
+                    break;
+                default:
+                    Console.WriteLine("Invalid sort criteria.");
+                    return;
+            }
+
+            Console.WriteLine("\n=== Sorted Customers ===");
+            foreach (var (customer, index) in sortedCustomers.Select((c, i) => (c, i)))
+            {
+                Console.WriteLine($"\n--- Customer {index + 1} ---");
+                DisplayCustomer(customer);
+            }
+#if DEBUG_MODE
+            Console.WriteLine($"[DEBUG] Sorted {sortedCustomers.Count} customers by criteria {criteria}, order {(ascending ? "Ascending" : "Descending")}.");
+#endif
+        }
+
+        private void IssueInvoices()
+        {
+            if (!_customers.Any()) { Console.WriteLine("No customers found."); return; }
+
+            Console.WriteLine("\n=== Issue Invoices ===");
+            Console.WriteLine("1. Issue and display invoice for a specific customer");
+            Console.WriteLine("2. Issue and display invoices for all customers");
+            Console.WriteLine("3. Export invoices to file");
+            Console.Write("Choose an action (1-3): ");
+            string choice = Console.ReadLine()?.Trim();
+
+            List<Customer> customersToInvoice = new List<Customer>();
+            bool exportToFile = choice == "3";
+
+            switch (choice)
+            {
+                case "1":
+                    string id = InputString("Enter Customer ID: ");
+                    var customer = _customers.FirstOrDefault(c => c.Id == id);
+                    if (customer != null)
+                        customersToInvoice.Add(customer);
+                    else
+                        Console.WriteLine("Customer not found.");
+                    break;
+                case "2":
+                case "3":
+                    customersToInvoice = _customers.ToList();
+                    break;
+                default:
+                    Console.WriteLine("Invalid action.");
+                    return;
+            }
+
+            if (!customersToInvoice.Any())
+            {
+                Console.WriteLine("No customers selected for invoicing.");
+                return;
+            }
+
+            string invoiceDir = "Invoices";
+            if (exportToFile)
+            {
+                try
+                {
+                    Directory.CreateDirectory(invoiceDir);
+#if DEBUG_MODE
+                    Console.WriteLine($"[DEBUG] Created directory: {invoiceDir}");
+#endif
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Failed to create directory: {ex.Message}");
+                    return;
+                }
+            }
+
+            foreach (var customer in customersToInvoice)
+            {
+                string invoiceText = $"=== Invoice ===\n" +
+                                    $"Invoice for Customer: {customer.Name} (ID: {customer.Id})\n" +
+                                    $"Date: {DateTime.Now:yyyy-MM-dd}\n" +
+                                    $"Type: {customer.Type}\n" +
+                                    $"Usage: {customer.Usage:F2} m³\n" +
+                                    $"Water Cost: {customer.WaterCost:F2} VND\n" +
+                                    $"Environmental Fee: {customer.EnvironmentFee:F2} VND\n" +
+                                    $"VAT: {customer.VAT:F2} VND\n" +
+                                    $"Custom Fees: {(customer.CustomFees.Any() ? string.Join(", ", customer.CustomFees.Select(f => $"{f.Key}: {f.Value:F2} VND")) : "None")}\n" +
+                                    $"Total Amount Due: {customer.TotalBill:F2} VND\n" +
+                                    $"Payment Notification: Please pay {customer.TotalBill:F2} VND by {DateTime.Now.AddDays(7):yyyy-MM-dd}\n" +
+                                    $"=================";
+
+                if (!exportToFile)
+                {
+                    Console.WriteLine($"\n{invoiceText}");
+                }
+                else
+                {
+                    string fileName = Path.Combine(invoiceDir, $"Invoice_{customer.Id}_{DateTime.Now:yyyyMMdd}.txt");
+                    try
+                    {
+                        File.WriteAllText(fileName, invoiceText);
+                        Console.WriteLine($"Invoice exported to {fileName}");
+#if DEBUG_MODE
+                        Console.WriteLine($"[DEBUG] Exported invoice to {fileName}");
+#endif
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Failed to export invoice for {customer.Id}: {ex.Message}");
+#if DEBUG_MODE
+                        Console.WriteLine($"[DEBUG] Export failed for {customer.Id}: {ex.Message}");
+#endif
+                    }
+                }
+#if DEBUG_MODE
+                Console.WriteLine($"[DEBUG] Processed invoice for Customer ID={customer.Id}, Total={customer.TotalBill:F2} VND");
+#endif
+            }
+
+            if (!exportToFile)
+            {
+                Console.WriteLine("Invoices issued successfully.");
+            }
+            else
+            {
+                Console.WriteLine("Invoice export completed.");
+            }
+        }
+
+        private static void DisplayCustomer(Customer customer)
+        {
+            Console.WriteLine($"ID: {customer.Id} | Name: {customer.Name} | Type: {customer.Type}");
+            Console.WriteLine($"Number of People: {customer.NumberOfPeople} | Previous Reading: {customer.PreviousReading:F2} m³ | Current Reading: {customer.CurrentReading:F2} m³");
+            Console.WriteLine($"Usage: {customer.Usage:F2} m³ | Water Cost: {customer.WaterCost:F2} VND");
+            Console.WriteLine($"Environmental Fee: {customer.EnvironmentFee:F2} VND | VAT: {customer.VAT:F2} VND");
+            Console.WriteLine($"Custom Fees: {(customer.CustomFees.Any() ? string.Join(", ", customer.CustomFees.Select(f => $"{f.Key}: {f.Value:F2} VND")) : "None")}");
+            Console.WriteLine($"Total Bill: {customer.TotalBill:F2} VND");
+        }
+
+        private static CustomerType InputCustomerType()
+        {
+            while (true)
+            {
+                Console.Write("Enter customer type (1=Household, 2=Business, 3=Administrative, 4=Industrial): ");
+                if (Enum.TryParse(Console.ReadLine(), out CustomerType type) && Enum.IsDefined(typeof(CustomerType), type))
+                    return type;
+                Console.WriteLine("Invalid customer type. Please enter 1, 2, 3, or 4.");
+            }
+        }
+
+        private static string InputString(string prompt, Func<string, bool> validator = null, string errorMessage = "Invalid input.", bool allowEmpty = false)
+        {
+            while (true)
+            {
+                Console.Write(prompt);
+                string input = Console.ReadLine()?.Trim();
+                if ((allowEmpty && string.IsNullOrEmpty(input)) || (!string.IsNullOrEmpty(input) && (validator == null || validator(input))))
+                    return input;
+                Console.WriteLine(errorMessage);
+            }
+        }
+
+        private static int InputInt(string prompt, int minValue)
+        {
+            while (true)
+            {
+                Console.Write(prompt);
+                if (int.TryParse(Console.ReadLine(), out int value) && value >= minValue)
+                    return value;
+                Console.WriteLine($"Please enter a number ≥ {minValue}.");
+            }
+        }
+
+        private static double InputDouble(string prompt, double minValue)
+        {
+            while (true)
+            {
+                Console.Write(prompt);
+                if (double.TryParse(Console.ReadLine(), out double value) && value >= minValue)
+                    return value;
+                Console.WriteLine($"Please enter a number ≥ {minValue}.");
+            }
+        }
+
+        private static bool Confirm(string message)
+        {
+            Console.Write($"{message} (y/n): ");
+            return Console.ReadLine()?.Trim().ToLower() == "y";
+        }
+    }
+
+    class Program
+    {
+        static void Main()
+        {
+            Console.WriteLine("Compiling program...");
+#if DEBUG_MODE
+            Console.WriteLine("[DEBUG] Program running in DEBUG mode.");
+#endif
+            Console.WriteLine("Executing program using CLR (Common Language Runtime)...");
+
+            var manager = new WaterBillManager();
+            manager.Run();
+        }
+    }
+}
+
+//#define DEBUG_MODE  // Bộ tiền xử lý: chỉ thị định nghĩa chế độ debug
+//using System;
+//using System.Collections.Generic;
+//using System.Linq;
+
+//namespace WaterBillSystem
+//{
+//    public enum CustomerType
+//    {
+//        Household = 1,
+//        Business = 2,
+//        Administrative = 3
+//    }
+
+//    public class Customer
+//    {
+//        public string Id { get; set; }
+//        public string Name { get; set; }
+//        public CustomerType Type { get; set; }
+//        public int NumberOfPeople { get; set; }
+//        public double PreviousReading { get; set; }
+//        public double CurrentReading { get; set; }
+//        public Dictionary<string, double> CustomFees { get; set; } = new Dictionary<string, double>();
+
+//        public double Usage => Math.Max(0, CurrentReading - PreviousReading);
+//        public double WaterCost => WaterBillCalculator.CalculateWaterCost(this);
+//        public double EnvironmentFee => WaterCost * 0.10;
+//        public double VAT => WaterCost * 0.10;
+//        public double CustomFeesTotal => CustomFees.Sum(f => f.Value);
+//        public double TotalBill => WaterCost + EnvironmentFee + VAT + CustomFeesTotal;
+//    }
+
+//    public static class WaterBillCalculator
+//    {
+//        public static double HouseholdPriceTier1 { get; set; } = 6000;
+//        public static double HouseholdPriceTier2 { get; set; } = 12000;
+//        public static double HouseholdPriceTier3 { get; set; } = 20000;
+//        public static double BusinessPrice { get; set; } = 22000;
+//        public static double AdministrativePrice { get; set; } = 10000;
+
+//        public static double CalculateWaterCost(Customer customer)
+//        {
+//            if (customer.Usage <= 0 || (customer.Type == CustomerType.Household && customer.NumberOfPeople <= 0))
+//                return 0;
+
+//            switch (customer.Type)
+//            {
+//                case CustomerType.Household:
+//                    return CalculateHouseholdCost(customer);
+//                case CustomerType.Business:
+//                    return customer.Usage * BusinessPrice;
+//                case CustomerType.Administrative:
+//                    return customer.Usage * AdministrativePrice;
+//                default:
+//                    return 0;
+//            }
+//        }
+
+//        private static double CalculateHouseholdCost(Customer customer)
+//        {
+//            double usagePerPerson = customer.Usage / customer.NumberOfPeople;
+//            double totalCost = 0;
+
+//            if (usagePerPerson <= 10)
+//                totalCost = customer.Usage * HouseholdPriceTier1;
+//            else if (usagePerPerson <= 20)
+//                totalCost = (customer.NumberOfPeople * 10 * HouseholdPriceTier1) +
+//                            ((customer.Usage - customer.NumberOfPeople * 10) * HouseholdPriceTier2);
+//            else
+//                totalCost = (customer.NumberOfPeople * 10 * HouseholdPriceTier1) +
+//                            (customer.NumberOfPeople * 10 * HouseholdPriceTier2) +
+//                            ((customer.Usage - customer.NumberOfPeople * 20) * HouseholdPriceTier3);
+
+//            return totalCost;
+//        }
+//    }
+
+//    public class WaterBillManager
+//    {
+//        private readonly List<Customer> _customers = new List<Customer>();
+
+//        public void Run()
+//        {
+//            while (true)
+//            {
+//                DisplayMenu();
+//                string choice = Console.ReadLine()?.Trim();
+//                if (!ProcessMenuChoice(choice)) break;
+//            }
+//        }
+
+//        private void DisplayMenu()
+//        {
+//            Console.WriteLine("\n=== Water Bill Menu ===");
+//            Console.WriteLine("[1] Add Customer");
+//            Console.WriteLine("[2] View All Customers");
+//            Console.WriteLine("[3] Update Customer");
+//            Console.WriteLine("[4] Remove Customer");
+//            Console.WriteLine("[5] Search Customer by ID");
+//            Console.WriteLine("[6] Find Customers by Name or Bill Range");
+//            Console.WriteLine("[0] Exit");
+//            Console.Write("Select an option: ");
+//        }
+
+//        private bool ProcessMenuChoice(string choice)
+//        {
+//            switch (choice)
+//            {
+//                case "1": AddCustomer(); break;
+//                case "2": ViewCustomers(); break;
+//                case "3": UpdateCustomer(); break;
+//                case "4": RemoveCustomer(); break;
+//                case "5": SearchCustomer(); break;
+//                case "6": FindByNameOrBillRange(); break;
+//                case "0": return false;
+//                default: Console.WriteLine("Invalid option. Please try again."); break;
+//            }
+//            return true;
+//        }
+
+//        private void AddCustomer()
+//        {
+//            while (true)
+//            {
+//                var customer = new Customer();
+//                customer.Id = InputString("Enter Customer ID: ", id => !_customers.Any(c => c.Id == id), "ID already exists.");
+//                customer.Name = InputString("Enter Customer Name: ", s => !string.IsNullOrWhiteSpace(s), "Name cannot be empty.");
+//                customer.Type = InputCustomerType("Enter Customer Type:");
+//                customer.NumberOfPeople = InputInt("Number of people: ", 1);
+//                customer.PreviousReading = InputDouble("Previous reading (m³): ", 0);
+//                customer.CurrentReading = InputDouble("Current reading (m³): ", customer.PreviousReading);
+
+//                while (Confirm("Add a custom fee?"))
+//                {
+//                    string feeName = InputString("Enter fee name: ", s => !string.IsNullOrWhiteSpace(s) && !customer.CustomFees.ContainsKey(s), "Fee name cannot be empty or already exists.");
+//                    double feeAmount = InputDouble("Enter fee amount (VND): ", 0);
+//                    customer.CustomFees[feeName] = feeAmount;
+//                }
+
+//                _customers.Add(customer);
+//                if (!Confirm("Add another customer?")) break;
+//            }
+//        }
+
+//        private void ViewCustomers()
+//        {
+//            if (!_customers.Any())
+//            {
+//                Console.WriteLine("No customers found.");
+//                return;
+//            }
+
+//            foreach (var (customer, index) in _customers.Select((c, i) => (c, i)))
+//            {
+//                Console.WriteLine($"\n--- Customer {index + 1} ---");
+//                DisplayCustomer(customer);
+//            }
+//        }
+
+//        private void UpdateCustomer()
+//        {
+//            if (!_customers.Any()) { Console.WriteLine("No customers found."); return; }
+
+//            string id = InputString("Enter Customer ID to update: ");
+//            var customer = _customers.FirstOrDefault(c => c.Id == id);
+//            if (customer == null) { Console.WriteLine("Customer not found."); return; }
+
+//            string name = InputString("New Name (Enter to skip): ", allowEmpty: true);
+//            if (!string.IsNullOrEmpty(name)) customer.Name = name;
+
+//            Console.Write("New Type (1=Household, 2=Business, 3=Administrative, Enter to skip): ");
+//            if (Enum.TryParse(Console.ReadLine(), out CustomerType newType) && Enum.IsDefined(typeof(CustomerType), newType))
+//            {
+//                customer.Type = newType;
+//                customer.NumberOfPeople = (newType == CustomerType.Household) ? InputInt("Number of people: ", 1) : 0;
+//            }
+
+//            string prevReading = InputString("New Previous Reading (Enter to skip): ", allowEmpty: true);
+//            if (double.TryParse(prevReading, out double prev)) customer.PreviousReading = prev;
+
+//            string currReading = InputString("New Current Reading (Enter to skip): ", allowEmpty: true);
+//            if (double.TryParse(currReading, out double curr) && curr >= customer.PreviousReading)
+//                customer.CurrentReading = curr;
+//            else if (!string.IsNullOrEmpty(currReading))
+//                Console.WriteLine("Current reading must be >= previous reading.");
+
+//            while (Confirm("Modify custom fees?"))
+//            {
+//                Console.WriteLine("1. Add new fee");
+//                Console.WriteLine("2. Update existing fee");
+//                Console.WriteLine("3. Remove fee");
+//                Console.Write("Choose an action (1-3, Enter to skip): ");
+//                string feeAction = Console.ReadLine()?.Trim();
+//                if (string.IsNullOrEmpty(feeAction)) break;
+
+//                switch (feeAction)
+//                {
+//                    case "1":
+//                        string newFeeName = InputString("Enter new fee name: ", s => !string.IsNullOrWhiteSpace(s) && !customer.CustomFees.ContainsKey(s), "Fee name cannot be empty or already exists.");
+//                        double newFeeAmount = InputDouble("Enter fee amount (VND): ", 0);
+//                        customer.CustomFees[newFeeName] = newFeeAmount;
+//                        break;
+//                    case "2":
+//                        if (!customer.CustomFees.Any()) { Console.WriteLine("No fees to update."); break; }
+//                        string updateFeeName = InputString("Enter fee name to update: ", s => customer.CustomFees.ContainsKey(s), "Fee not found.");
+//                        double updateFeeAmount = InputDouble("Enter new fee amount (VND): ", 0);
+//                        customer.CustomFees[updateFeeName] = updateFeeAmount;
+//                        break;
+//                    case "3":
+//                        if (!customer.CustomFees.Any()) { Console.WriteLine("No fees to remove."); break; }
+//                        string removeFeeName = InputString("Enter fee name to remove: ", s => customer.CustomFees.ContainsKey(s), "Fee not found.");
+//                        customer.CustomFees.Remove(removeFeeName);
+//                        break;
+//                    default:
+//                        Console.WriteLine("Invalid action.");
+//                        break;
+//                }
+//            }
+
+//            Console.WriteLine("Customer updated successfully.");
+//        }
+
+//        private void RemoveCustomer()
+//        {
+//            string id = InputString("Enter Customer ID to remove: ");
+//            var customer = _customers.FirstOrDefault(c => c.Id == id);
+//            if (customer != null)
+//            {
+//                _customers.Remove(customer);
+//                Console.WriteLine("Customer removed successfully.");
+//            }
+//            else
+//            {
+//                Console.WriteLine("Customer not found.");
+//            }
+//        }
+
+//        private void SearchCustomer()
+//        {
+//            string id = InputString("Enter Customer ID to search: ");
+//            var customer = _customers.FirstOrDefault(c => c.Id == id);
+//            if (customer != null)
+//                DisplayCustomer(customer);
+//            else
+//                Console.WriteLine("Customer not found.");
+//        }
+
+//        private void FindByNameOrBillRange()
+//        {
+//            if (!_customers.Any()) { Console.WriteLine("No customers found."); return; }
+
+//            Console.WriteLine("1. Find by Customer Name");
+//            Console.WriteLine("2. Find by Bill Range");
+//            Console.WriteLine("3. Find by VAT");
+//            Console.WriteLine("4. Find by Usage");
+//            Console.WriteLine("5. Find by Type");
+//            Console.WriteLine("0. Back to main menu");
+//            Console.Write("Choose an action (0-5): ");
+//            string choice = Console.ReadLine()?.Trim();
+
+//            switch (choice)
+//            {
+//                case "1":
+//                    string name = InputString("Enter Customer Name (partial match): ", s => !string.IsNullOrWhiteSpace(s), "Name cannot be empty.");
+//                    var nameResults = _customers.Where(c => c.Name.ToLower().Contains(name.ToLower())).ToList();
+//                    if (!nameResults.Any()) Console.WriteLine("No customers found with that name.");
+//                    else foreach (var c in nameResults) { Console.WriteLine("\n--- Matching Customer ---"); DisplayCustomer(c); }
+//                    break;
+
+//                case "2":
+//                    double minBill = InputDouble("Enter minimum bill amount: ", 0);
+//                    double maxBill = InputDouble("Enter maximum bill amount: ", minBill);
+//                    var billResults = _customers.Where(c => c.TotalBill >= minBill && c.TotalBill <= maxBill).ToList();
+//                    if (!billResults.Any()) Console.WriteLine("No customers found within the specified bill range.");
+//                    else foreach (var c in billResults) { Console.WriteLine("\n--- Matching Customer ---"); DisplayCustomer(c); }
+//                    break;
+
+//                case "3":
+//                    double minVAT = InputDouble("Enter minimum VAT amount: ", 0);
+//                    double maxVAT = InputDouble("Enter maximum VAT amount: ", minVAT);
+//                    var vatResults = _customers.Where(c => c.VAT >= minVAT && c.VAT <= maxVAT).ToList();
+//                    if (!vatResults.Any()) Console.WriteLine("No customers found within the specified VAT range.");
+//                    else foreach (var c in vatResults) { Console.WriteLine("\n--- Matching Customer ---"); DisplayCustomer(c); }
+//                    break;
+
+//                case "4":
+//                    double minUsage = InputDouble("Enter minimum usage (m³): ", 0);
+//                    double maxUsage = InputDouble("Enter maximum usage (m³): ", minUsage);
+//                    var usageResults = _customers.Where(c => c.Usage >= minUsage && c.Usage <= maxUsage).ToList();
+//                    if (!usageResults.Any()) Console.WriteLine("No customers found within the specified usage range.");
+//                    else foreach (var c in usageResults) { Console.WriteLine("\n--- Matching Customer ---"); DisplayCustomer(c); }
+//                    break;
+
+//                case "5":
+//                    Console.Write("Enter customer type (1=Household, 2=Business, 3=Administrative): ");
+//                    if (Enum.TryParse(Console.ReadLine(), out CustomerType type) && Enum.IsDefined(typeof(CustomerType), type))
+//                    {
+//                        var typeResults = _customers.Where(c => c.Type == type).ToList();
+//                        if (!typeResults.Any()) Console.WriteLine($"No customers found with type {type}.");
+//                        else foreach (var c in typeResults) { Console.WriteLine("\n--- Matching Customer ---"); DisplayCustomer(c); }
+//                    }
+//                    else
+//                    {
+//                        Console.WriteLine("Invalid customer type.");
+//                    }
+//                    break;
+
+//                case "0": return;
+
+//                default: Console.WriteLine("Invalid action."); break;
+//            }
+//        }
+
+//        private static void DisplayCustomer(Customer customer)
+//        {
+//            Console.WriteLine($"ID: {customer.Id} | Name: {customer.Name} | Type: {customer.Type}");
+//            Console.WriteLine($"Number of People: {customer.NumberOfPeople} | Previous Reading: {customer.PreviousReading:F2} m³ | Current Reading: {customer.CurrentReading:F2} m³");
+//            Console.WriteLine($"Usage: {customer.Usage:F2} m³ | Water Cost: {customer.WaterCost:F2} VND");
+//            Console.WriteLine($"Environmental Fee: {customer.EnvironmentFee:F2} VND | VAT: {customer.VAT:F2} VND");
+//            Console.WriteLine($"Custom Fees: {(customer.CustomFees.Any() ? string.Join(", ", customer.CustomFees.Select(f => $"{f.Key}: {f.Value:F2} VND")) : "None")}");
+//            Console.WriteLine($"Total Bill: {customer.TotalBill:F2} VND");
+//        }
+
+//        private static CustomerType InputCustomerType(string v)
+//        {
+//            while (true)
+//            {
+//                Console.Write("Enter customer type (1=Household, 2=Business, 3=Administrative): ");
+//                if (Enum.TryParse(Console.ReadLine(), out CustomerType type) && Enum.IsDefined(typeof(CustomerType), type))
+//                    return type;
+//                Console.WriteLine("Invalid customer type. Please enter 1, 2, or 3.");
+//            }
+//        }
+
+//        private static string InputString(string prompt, Func<string, bool> validator = null, string errorMessage = "Invalid input.", bool allowEmpty = false)
+//        {
+//            while (true)
+//            {
+//                Console.Write(prompt);
+//                string input = Console.ReadLine()?.Trim();
+//                if ((allowEmpty && string.IsNullOrEmpty(input)) || (!string.IsNullOrEmpty(input) && (validator == null || validator(input))))
+//                    return input;
+//                Console.WriteLine(errorMessage);
+//            }
+//        }
+
+//        private static int InputInt(string prompt, int minValue)
+//        {
+//            while (true)
+//            {
+//                Console.Write(prompt);
+//                if (int.TryParse(Console.ReadLine(), out int value) && value >= minValue)
+//                    return value;
+//                Console.WriteLine($"Please enter a number ≥ {minValue}.");
+//            }
+//        }
+
+//        private static double InputDouble(string prompt, double minValue)
+//        {
+//            while (true)
+//            {
+//                Console.Write(prompt);
+//                if (double.TryParse(Console.ReadLine(), out double value) && value >= minValue)
+//                    return value;
+//                Console.WriteLine($"Please enter a number ≥ {minValue}.");
+//            }
+//        }
+
+//        private static bool Confirm(string message)
+//        {
+//            Console.Write($"{message} (y/n): ");
+//            return Console.ReadLine()?.Trim().ToLower() == "y";
+//        }
+//    }
+
+//    class Program
+//    {
+//        static void Main()
+//        {
+//            Console.WriteLine("Đang biên dịch chương trình..."); // Compiler xử lý đoạn này
+//#if DEBUG_MODE
+//            Console.WriteLine("[DEBUG] Chương trình đang chạy ở chế độ DEBUG.");  // Pre-processor thực hiện kiểm tra
+//#endif
+//            Console.WriteLine("Đang thực thi chương trình bằng CLR (Common Language Runtime)...");  // Mô phỏng Interpreter
+
+//            var manager = new WaterBillManager();
+//            manager.Run();
+//        }
+//    }
+//}
